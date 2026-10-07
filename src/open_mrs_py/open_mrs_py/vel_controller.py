@@ -5,8 +5,8 @@ from enum import Enum
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Twist
-from example_interfaces.msg import Int32
-from example_interfaces.msg import Int32MultiArray
+from std_msgs.msg import Int32
+from std_msgs.msg import Int32MultiArray
 from open_mrs_srv_msg.srv import SetSelfAlert
 from tf2_ros import TransformException
 from tf2_ros.buffer import Buffer
@@ -38,7 +38,7 @@ class VelController(Node):
     work_mode = [] # 4 states: 0 working, 1 transient, 2 left, 3 leaving
     theta = 0.0
     mode = 0x0000 # 4 states: 0 working, 1 transient, 2 left, 3 leaving
-    l_flag = -1 # indicates which robot is trying to leave
+    # l_flag = -1 # indicates which robot is trying to leave
     v_max = 5.0
     w_max = 5.0
 
@@ -94,9 +94,12 @@ class VelController(Node):
         self.self_leave_alert = (self.self_idx << 2) + 0x0003 # reset state of this robot
         self.self_leave_alert &= full_msg
 
+        self.mode = request.mode
+
         pub_msg = Int32()
         pub_msg.data = self.self_leave_alert
         self.alert_pub_.publish(pub_msg)
+        self.mode_pub_.publish(Int32(data=self.mode))
 
         return response
     
@@ -111,14 +114,14 @@ class VelController(Node):
                 self.work_mode[idx] = msg.data & 0x0003
                 if (msg.data & 0x0003) == Modes.LEAVING.value and self.connection[idx]:
                     self.mode = Modes.TRANSIENT.value
-                    self.l_flag = idx
+                    # self.l_flag = idx
                     mode_msg.data = self.mode
                     self.mode_pub_.publish(mode_msg)
-                # elif (msg.data & 0x0003) == Modes.LEFT.value and self.connection[idx]: 
-                #     self.mode = Modes.WORKING.value
-                #     self.l_flag = -1
-                #     mode_msg.data = self.mode
-                #     self.mode_pub_.publish(mode_msg)
+                elif (msg.data & 0x0003) == Modes.LEFT.value and self.connection[idx]: 
+                    self.mode = Modes.WORKING.value
+                    # self.l_flag = -1
+                    mode_msg.data = self.mode
+                    self.mode_pub_.publish(mode_msg)
                 break
         
         # self.get_logger().info(f'Turtlebot{self.self_idx}: {self.mode}')
@@ -128,20 +131,21 @@ class VelController(Node):
         msg = Twist()
         connected = Int32MultiArray()
 
-        if (self.self_leave_alert & 0x0003) == 2:
+        if self.mode == Modes.LEFT.value:
             self.cmd_vel_pub_.publish(msg)
             self.connection = [0]*(self.num_robot)
             connected.data = self.connection
             # self.connection_pub_.publish(connected)
+            # self.mode_pub_.publish(Int32(data=self.mode))
             return 
         
         self.get_relative_pos()
         connected.data = self.connection
         # self.connection_pub_.publish(connected)
 
-        if (self.self_leave_alert & 0x0003) == 1:
+        if self.mode == Modes.LEAVING.value:
             if self.is_connected(): 
-                self.self_leave_alert = 2 + (self.self_idx<<2)
+                self.self_leave_alert = Modes.LEFT.value + (self.self_idx<<2)
                 alert_msg = Int32()
                 alert_msg.data = self.self_leave_alert
                 self.alert_pub_.publish(alert_msg)
@@ -172,12 +176,19 @@ class VelController(Node):
         delta = [0.0, 0.0]
 
         if self.mode == Modes.TRANSIENT.value:
-            delta[0] = self.rho[self.l_flag] + self.rho[self.l_flag]/(self.max_d**2-self.rho[self.l_flag]**2)
-            delta[1] = 0.0
+            for i in range(self.num_robot):
+                if self.connection[i] and self.work_mode[i] == Modes.LEAVING.value:
+                    delta[0] += (2*self.rel_x[i]/((self.max_d-self.rho[i])**2) + 
+                        2*self.rel_x[i]*self.rho[i]/(self.max_d-self.rho[i])**3)
+                    delta[1] += (2*self.rel_y[i]/((self.max_d-self.rho[i])**2) + 
+                        2*self.rel_y[i]*self.rho[i]/(self.max_d-self.rho[i])**3)
+
+            # delta[0] = self.rho[self.l_flag] + self.rho[self.l_flag]/(self.max_d**2-self.rho[self.l_flag]**2)
+            # delta[1] = 0.0
             return delta
 
-        for i in range(self.num_robot-1): 
-            if self.connection[i] == 0:
+        for i in range(self.num_robot): 
+            if self.connection[i] == 0 or self.self_idx == i:
                 continue
             if self.work_mode[i] == Modes.WORKING.value:
                 delta[0] += (2*self.rel_x[i]/((self.max_d-self.rho[i])**2) + 
@@ -209,8 +220,8 @@ class VelController(Node):
         try: 
             tf_ = self.tf_buffer_.lookup_transform('odom', self.self_frame, rclpy.time.Time())
         except TransformException as ex:
-                self.get_logger().warning('Unable to find self pose. ')
-                return
+            self.get_logger().warning('Unable to find self pose. ')
+            return
 
         qx = tf_.transform.rotation.x
         qy = tf_.transform.rotation.y
@@ -251,9 +262,10 @@ class VelController(Node):
             elif self.rho[idx] <= self.max_d-self.epsilon:
                 self.connection[idx] = 1
 
-            if self.connection[idx] == 1 and self.work_mode[idx] == Modes.LEAVING.value:
+            if self.connection[idx] == 1 and self.work_mode[idx] == Modes.LEAVING.value and \
+            self.mode != Modes.TRANSIENT.value:
                 self.mode = Modes.TRANSIENT.value
-                self.l_flag = idx
+                # self.l_flag = idx
                 mode_msg = Int32()
                 mode_msg.data = self.mode
                 self.mode_pub_.publish(mode_msg)

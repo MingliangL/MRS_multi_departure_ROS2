@@ -24,7 +24,8 @@ setup(
     entry_points={
         'console_scripts': [
             'vel_controller = open_mrs_py.vel_controller:main',
-            'base_link_tf_pub = open_mrs_py.base_link_tf_pub:main'
+            'base_link_tf_pub = open_mrs_py.base_link_tf_pub:main',
+            'multi_departure_caller = open_mrs_py.multi_departure_caller:main'
         ],
     },
 )
