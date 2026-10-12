@@ -10,8 +10,8 @@ from open_mrs_py.vel_controller import Modes
 def main(args=None):
     rclpy.init(args=args)
     caller_node = Node('multi_departure_caller')
-    client1 = caller_node.create_client(SetSelfAlert, '/mec_car1/set_self_alert')
-    client2 = caller_node.create_client(SetSelfAlert, '/mec_car2/set_self_alert')
+    client1 = caller_node.create_client(SetSelfAlert, '/mec_car1/self_alert_srv')
+    client2 = caller_node.create_client(SetSelfAlert, '/mec_car2/self_alert_srv')
 
     req1 = SetSelfAlert.Request()
     req2 = SetSelfAlert.Request()

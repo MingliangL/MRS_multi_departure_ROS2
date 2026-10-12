@@ -7,6 +7,7 @@ from rclpy.node import Node
 from geometry_msgs.msg import Twist
 from std_msgs.msg import Int32
 from std_msgs.msg import Int32MultiArray
+from std_msgs.msg import Float32MultiArray
 from open_mrs_srv_msg.srv import SetSelfAlert
 from tf2_ros import TransformException
 from tf2_ros.buffer import Buffer
@@ -49,8 +50,16 @@ class VelController(Node):
     k_rho = 0.2
     max_d = 2.0
     epsilon = 0.1
+    ke1 = 2.0
+    ke2 = 100.0
     # min_d = 0.4
-    
+
+    x_h = []
+    y_h = []
+    vx_h = []
+    vy_h = []
+    x_hi = None 
+    y_hi = None
 
     def __init__(self):
         super().__init__('vel_controller')
@@ -66,7 +75,6 @@ class VelController(Node):
         for i in range(self.num_robot): 
             self.other_frame.append(f'mec_car{i}')
             self.get_logger().info(f'Append mec_car{i}')
-            # print(self.work_mode)
 
         self.rho = [0.0]*(self.num_robot)
         self.rel_x = [0.0]*(self.num_robot)
@@ -74,6 +82,13 @@ class VelController(Node):
         self.rel_th = [0.0]*(self.num_robot)
         self.work_mode = [0]*(self.num_robot)
         self.connection = [0]*(self.num_robot)
+
+        self.x_h = [0.0]*(self.num_robot)
+        self.y_h = [0.0]*(self.num_robot)
+        self.vx_h = [0.0]*(self.num_robot)
+        self.vy_h = [0.0]*(self.num_robot)
+        self.x_hi = [[0.0 for _ in range(self.num_robot)] for _ in range(self.num_robot)]
+        self.y_hi = [[0.0 for _ in range(self.num_robot)] for _ in range(self.num_robot)]
 
         self.tf_buffer_ = Buffer()
         self.tf_listener_ = TransformListener(self.tf_buffer_, self)
@@ -85,8 +100,15 @@ class VelController(Node):
         self.self_alert_srv_ = self.create_service(SetSelfAlert, 
                                                 f'/mec_car{self.self_idx}/self_alert_srv', 
                                                 self.self_alert_cb)
+        self.eso_pub_ = self.create_publisher(Float32MultiArray, f'/mec_car{self.self_idx}/eso', 10)
+        self.eso_sub_ = self.create_subscription(Float32MultiArray, f'/eso', self.eso_cb, 10)
 
         self.timer = self.create_timer(self.timer_period, self.vel_control)
+
+    def eso_cb(self, msg):
+        for i in range(self.num_robot):
+            self.x_hi[i][0:self.num_robot] = msg.data[i*2*self.num_robot : i*2*self.num_robot+self.num_robot]
+            self.y_hi[i][0:self.num_robot] = msg.data[i*2*self.num_robot+self.num_robot : (i+1)*2*self.num_robot]
 
 
     def self_alert_cb(self, request, response): 
@@ -127,28 +149,37 @@ class VelController(Node):
         # self.get_logger().info(f'Turtlebot{self.self_idx}: {self.mode}')
 
 
+    def pub_eso(self):
+        msg = Float32MultiArray()
+        msg.data = self.x_h + self.y_h
+        self.eso_pub_.publish(msg)
+
+
     def vel_control(self):
         msg = Twist()
-        connected = Int32MultiArray()
+        # connected = Int32MultiArray()
 
         if self.mode == Modes.LEFT.value:
             self.cmd_vel_pub_.publish(msg)
             self.connection = [0]*(self.num_robot)
-            connected.data = self.connection
+            # connected.data = self.connection
             # self.connection_pub_.publish(connected)
             # self.mode_pub_.publish(Int32(data=self.mode))
             return 
         
         self.get_relative_pos()
-        connected.data = self.connection
+        self.dObserver()
+        # connected.data = self.connection
         # self.connection_pub_.publish(connected)
 
         if self.mode == Modes.LEAVING.value:
             if self.is_connected(): 
+                self.mode = Modes.LEFT.value
                 self.self_leave_alert = Modes.LEFT.value + (self.self_idx<<2)
                 alert_msg = Int32()
                 alert_msg.data = self.self_leave_alert
                 self.alert_pub_.publish(alert_msg)
+                self.mode_pub_.publish(Int32(data=self.mode))
 
             self.cmd_vel_pub_.publish(msg)
             return 
@@ -170,7 +201,7 @@ class VelController(Node):
         # if m.abs(msg.linear.y) > m.abs(self.v_max): 
         #     msg.linear.y = self.v_max*m.sign(msg.linear.y)
         self.cmd_vel_pub_.publish(msg)
-
+        self.pub_eso()
 
     def pJpz(self): 
         delta = [0.0, 0.0]
@@ -199,8 +230,43 @@ class VelController(Node):
             #     continue
 
         return delta 
-    
-    
+
+
+    def dObserver(self):
+        for i in range(self.num_robot):
+            if self.self_idx == i:
+                continue
+            xd, yd, vxd, vyd = self.obsvr4Leader(i)
+            self.x_h[i] += self.timer_period*(self.vx_h[i] + xd[i])
+            self.y_h[i] += self.timer_period*(self.vy_h[i] + yd[i])
+            self.vx_h[i] += self.timer_period*(vxd[i])
+            self.vy_h[i] += self.timer_period*(vyd[i])
+
+
+    def obsvr4Leader(self, leader_idx):
+        xd = [0.0]*self.num_robot
+        yd = [0.0]*self.num_robot
+        vxd = [0.0]*self.num_robot
+        vyd = [0.0]*self.num_robot
+
+        for i in range(self.num_robot):
+            if self.connection[i] == 0 or self.self_idx == i:
+                continue
+            else: 
+                if i == leader_idx:
+                    xd[i] -= self.ke1*(self.x_h[i]-self.rel_x[i])
+                    yd[i] -= self.ke1*(self.y_h[i]-self.rel_y[i])
+                    vxd[i] -= self.ke2*(self.vx_h[i]-self.rel_x[i])
+                    vyd[i] -= self.ke2*(self.vy_h[i]-self.rel_y[i])
+                else:
+                    xd[i] -= self.ke1*(self.x_h[leader_idx]-self.x_hi[i][leader_idx]-self.rel_x[i])
+                    yd[i] -= self.ke1*(self.y_h[leader_idx]-self.y_hi[i][leader_idx]-self.rel_y[i])
+                    vxd[i] -= self.ke2*(self.vx_h[leader_idx]-self.x_hi[i][leader_idx]-self.rel_x[i])
+                    vyd[i] -= self.ke2*(self.vy_h[leader_idx]-self.y_hi[i][leader_idx]-self.rel_y[i])
+
+        return xd, yd, vxd, vyd
+
+                
     def is_connected(self): 
         """ Check if all the neighbors are within the distance of half of the communication range. 
             Did not choose to construct the graph Laplacian to save computational power. 
