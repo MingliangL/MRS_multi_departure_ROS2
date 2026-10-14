@@ -46,6 +46,13 @@ def generate_launch_description():
     #                        'self_idx': 4,
     #                        'num_robot': LaunchConfiguration('num_robot')
     #                    }])
+
+    eso_sync = Node(package='open_mrs_py',
+                    executable='eso_sync',
+                    name='eso_sync',
+                    parameters=[{
+                        'num_robot': LaunchConfiguration('num_robot')
+                    }])
     
     ld.add_action(num_robot)
     ld.add_action(controller1)
@@ -53,6 +60,6 @@ def generate_launch_description():
     ld.add_action(controller3)
     ld.add_action(controller4)
     # ld.add_action(controller5)
-
+    ld.add_action(eso_sync)
 
     return ld

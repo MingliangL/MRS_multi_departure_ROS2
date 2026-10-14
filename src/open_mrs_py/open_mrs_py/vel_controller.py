@@ -7,8 +7,9 @@ from rclpy.node import Node
 from geometry_msgs.msg import Twist
 from std_msgs.msg import Int32
 from std_msgs.msg import Int32MultiArray
-from std_msgs.msg import Float32MultiArray
+from std_msgs.msg import Float32MultiArray, MultiArrayDimension
 from open_mrs_srv_msg.srv import SetSelfAlert
+from open_mrs_srv_msg.msg import DESOMsg
 from tf2_ros import TransformException
 from tf2_ros.buffer import Buffer
 from tf2_ros.transform_listener import TransformListener
@@ -50,8 +51,8 @@ class VelController(Node):
     k_rho = 0.2
     max_d = 2.0
     epsilon = 0.1
-    ke1 = 2.0
-    ke2 = 100.0
+    ke1 = 3.0
+    ke2 = 20.0
     # min_d = 0.4
 
     x_h = []
@@ -100,8 +101,8 @@ class VelController(Node):
         self.self_alert_srv_ = self.create_service(SetSelfAlert, 
                                                 f'/mec_car{self.self_idx}/self_alert_srv', 
                                                 self.self_alert_cb)
-        self.eso_pub_ = self.create_publisher(Float32MultiArray, f'/mec_car{self.self_idx}/eso', 10)
-        self.eso_sub_ = self.create_subscription(Float32MultiArray, f'/eso', self.eso_cb, 10)
+        self.eso_pub_ = self.create_publisher(DESOMsg, f'/mec_car{self.self_idx}/eso', 10)
+        self.eso_sub_ = self.create_subscription(DESOMsg, f'/eso', self.eso_cb, 10)
 
         self.timer = self.create_timer(self.timer_period, self.vel_control)
 
@@ -150,7 +151,20 @@ class VelController(Node):
 
 
     def pub_eso(self):
-        msg = Float32MultiArray()
+        msg = DESOMsg()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = self.self_frame
+
+        rows = MultiArrayDimension()
+        rows.label = "rows"
+        rows.size = 1
+        rows.stride = 2 * self.num_robot
+        cols = MultiArrayDimension()
+        cols.label = "cols"
+        cols.size = 2 * self.num_robot
+        cols.stride = 2 * self.num_robot
+
+        msg.layout.dim = [rows, cols]
         msg.data = self.x_h + self.y_h
         self.eso_pub_.publish(msg)
 
@@ -181,6 +195,7 @@ class VelController(Node):
                 self.alert_pub_.publish(alert_msg)
                 self.mode_pub_.publish(Int32(data=self.mode))
 
+            self.pub_eso()
             self.cmd_vel_pub_.publish(msg)
             return 
 
@@ -189,17 +204,18 @@ class VelController(Node):
         # self.get_logger().info(f'Turtlebot{self.self_idx}: {self.connection}, {self.mode}, {delta}')
         
         if self.mode == Modes.WORKING.value: 
-            msg.linear.x = -self.k_v*delta[0]
-            msg.linear.y = -self.k_v*delta[1]
+            msg.linear.x = -self.k_v*(delta[0]*m.cos(self.theta) + delta[1]*m.sin(self.theta))
+            msg.linear.y = -self.k_v*(delta[1]*m.cos(self.theta) - delta[0]*m.sin(self.theta))
 
         elif self.mode == Modes.TRANSIENT.value: 
-            msg.linear.x = -self.k_v*delta[0]
-            msg.linear.y = -self.k_v*delta[1]
+            msg.linear.x = -self.k_v*(delta[0]*m.cos(self.theta) + delta[1]*m.sin(self.theta))
+            msg.linear.y = -self.k_v*(delta[1]*m.cos(self.theta) - delta[0]*m.sin(self.theta))
 
         # if m.abs(msg.linear.x) > m.abs(self.v_max): 
         #     msg.linear.x = self.v_max*m.sign(msg.linear.x)
         # if m.abs(msg.linear.y) > m.abs(self.v_max): 
         #     msg.linear.y = self.v_max*m.sign(msg.linear.y)
+
         self.cmd_vel_pub_.publish(msg)
         self.pub_eso()
 
@@ -237,32 +253,32 @@ class VelController(Node):
             if self.self_idx == i:
                 continue
             xd, yd, vxd, vyd = self.obsvr4Leader(i)
-            self.x_h[i] += self.timer_period*(self.vx_h[i] + xd[i])
-            self.y_h[i] += self.timer_period*(self.vy_h[i] + yd[i])
-            self.vx_h[i] += self.timer_period*(vxd[i])
-            self.vy_h[i] += self.timer_period*(vyd[i])
+            self.x_h[i] += self.timer_period*(self.vx_h[i] + xd)
+            self.y_h[i] += self.timer_period*(self.vy_h[i] + yd)
+            self.vx_h[i] += self.timer_period*(vxd)
+            self.vy_h[i] += self.timer_period*(vyd)
 
 
     def obsvr4Leader(self, leader_idx):
-        xd = [0.0]*self.num_robot
-        yd = [0.0]*self.num_robot
-        vxd = [0.0]*self.num_robot
-        vyd = [0.0]*self.num_robot
+        xd = 0.0
+        yd = 0.0
+        vxd = 0.0
+        vyd = 0.0
 
         for i in range(self.num_robot):
             if self.connection[i] == 0 or self.self_idx == i:
                 continue
             else: 
                 if i == leader_idx:
-                    xd[i] -= self.ke1*(self.x_h[i]-self.rel_x[i])
-                    yd[i] -= self.ke1*(self.y_h[i]-self.rel_y[i])
-                    vxd[i] -= self.ke2*(self.vx_h[i]-self.rel_x[i])
-                    vyd[i] -= self.ke2*(self.vy_h[i]-self.rel_y[i])
+                    xd -= self.ke1*(self.x_h[i] + self.rel_x[i])
+                    yd -= self.ke1*(self.y_h[i] + self.rel_y[i])
+                    vxd -= self.ke2*(self.x_h[i] + self.rel_x[i])
+                    vyd -= self.ke2*(self.y_h[i] + self.rel_y[i])
                 else:
-                    xd[i] -= self.ke1*(self.x_h[leader_idx]-self.x_hi[i][leader_idx]-self.rel_x[i])
-                    yd[i] -= self.ke1*(self.y_h[leader_idx]-self.y_hi[i][leader_idx]-self.rel_y[i])
-                    vxd[i] -= self.ke2*(self.vx_h[leader_idx]-self.x_hi[i][leader_idx]-self.rel_x[i])
-                    vyd[i] -= self.ke2*(self.vy_h[leader_idx]-self.y_hi[i][leader_idx]-self.rel_y[i])
+                    xd -= self.ke1*(self.x_h[leader_idx]-self.x_hi[i][leader_idx] + self.rel_x[i])
+                    yd -= self.ke1*(self.y_h[leader_idx]-self.y_hi[i][leader_idx] + self.rel_y[i])
+                    vxd -= self.ke2*(self.x_h[leader_idx]-self.x_hi[i][leader_idx] + self.rel_x[i])
+                    vyd -= self.ke2*(self.y_h[leader_idx]-self.y_hi[i][leader_idx] + self.rel_y[i])
 
         return xd, yd, vxd, vyd
 
@@ -312,9 +328,9 @@ class VelController(Node):
             qz = tf_.transform.rotation.z
             qw = tf_.transform.rotation.w
 
-            self.rel_x[idx] = -tf_.transform.translation.x # robot_i.rel_x[robot_j] = x[i] - x[j], following terms the same
+            self.rel_x[idx] = -tf_.transform.translation.x # robot_i.rel_x[robot_j] = x[i] - x[j] in i's frame, following terms the same
             self.rel_y[idx] = -tf_.transform.translation.y
-            # self.rel_x[idx], self.rel_y[idx] = self.to_odom_frame(self.rel_x[idx], self.rel_y[idx], self.theta)
+            self.rel_x[idx], self.rel_y[idx] = self.to_odom_frame(self.rel_x[idx], self.rel_y[idx], self.theta)
             self.rel_th[idx] = -self.yaw_from_quat(qx, qy, qz, qw)
 
             # self.get_logger().info(f'Turtlebot{self.self_idx}: rel_th[{idx}] = {self.rel_th[idx]}')
@@ -344,11 +360,11 @@ class VelController(Node):
         return yaw
     
 
-    # def to_odom_frame(self, dx, dy, theta):
-    #     dx_o = dx*m.cos(theta) - dy*m.sin(theta)
-    #     dy_o = dx*m.sin(theta) + dy*m.cos(theta)
+    def to_odom_frame(self, dx, dy, theta):
+        dx_o = dx*m.cos(theta) - dy*m.sin(theta)
+        dy_o = dx*m.sin(theta) + dy*m.cos(theta)
         
-    #     return dx_o, dy_o
+        return dx_o, dy_o
     
 
 
