@@ -222,29 +222,25 @@ class VelController(Node):
     def pJpz(self): 
         delta = [0.0, 0.0]
 
-        if self.mode == Modes.TRANSIENT.value:
-            for i in range(self.num_robot):
-                if self.connection[i] and self.work_mode[i] == Modes.LEAVING.value:
-                    delta[0] += (2*self.rel_x[i]/((self.max_d-self.rho[i])**2) + 
-                        2*self.rel_x[i]*self.rho[i]/(self.max_d-self.rho[i])**3)
-                    delta[1] += (2*self.rel_y[i]/((self.max_d-self.rho[i])**2) + 
-                        2*self.rel_y[i]*self.rho[i]/(self.max_d-self.rho[i])**3)
+        # if self.mode == Modes.TRANSIENT.value:
+        #     for i in range(self.num_robot):
+        #         if self.connection[i] and self.work_mode[i] == Modes.LEAVING.value:
+        #             delta[0] += (2*self.rel_x[i]/((self.max_d-self.rho[i])**2) + 
+        #                 2*self.rel_x[i]*self.rho[i]/(self.max_d-self.rho[i])**3)
+        #             delta[1] += (2*self.rel_y[i]/((self.max_d-self.rho[i])**2) + 
+        #                 2*self.rel_y[i]*self.rho[i]/(self.max_d-self.rho[i])**3)
 
-            # delta[0] = self.rho[self.l_flag] + self.rho[self.l_flag]/(self.max_d**2-self.rho[self.l_flag]**2)
-            # delta[1] = 0.0
-            return delta
+        #     return delta
 
         for i in range(self.num_robot): 
             if self.connection[i] == 0 or self.self_idx == i:
                 continue
-            if self.work_mode[i] == Modes.WORKING.value:
-                delta[0] += (2*self.rel_x[i]/((self.max_d-self.rho[i])**2) + 
-                    2*self.rel_x[i]*self.rho[i]/(self.max_d-self.rho[i])**3)
-                delta[1] += (2*self.rel_y[i]/((self.max_d-self.rho[i])**2) + 
-                    2*self.rel_y[i]*self.rho[i]/(self.max_d-self.rho[i])**3)
-            # elif self.work_mode[i] == Modes.LEFT.value:
-            #     continue
-
+            
+            delta[0] += (2*self.rel_x[i]/((self.max_d-self.rho[i])**2) + 
+                2*self.rel_x[i]*self.rho[i]/(self.max_d-self.rho[i])**3)
+            delta[1] += (2*self.rel_y[i]/((self.max_d-self.rho[i])**2) + 
+                2*self.rel_y[i]*self.rho[i]/(self.max_d-self.rho[i])**3)
+            
         return delta 
 
 
@@ -337,8 +333,6 @@ class VelController(Node):
 
             self.rho[idx] = math.sqrt(self.rel_x[idx]**2+self.rel_y[idx]**2) 
 
-            if (self.self_leave_alert & 0x03) == 1: 
-                continue
             if (self.rho[idx] > self.max_d) or self.work_mode[idx]  == Modes.LEFT.value:
                 self.connection[idx] = 0
             elif self.rho[idx] <= self.max_d-self.epsilon:
